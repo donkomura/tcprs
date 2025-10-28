@@ -1,0 +1,9 @@
+[package]
+name = "tcprs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tun-tap = "0.1.4"
+etherparse = "0.18"
+thiserror = "2"

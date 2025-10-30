@@ -1,49 +1,5 @@
 use std::io;
-use thiserror::Error;
-
-#[derive(Error, Debug)]
-pub enum HeaderError {
-    #[error("invalid header length `{0}`")]
-    InvalidLengthErorr(usize),
-    #[error("unknown")]
-    Unknown,
-}
-
-#[derive(Debug)]
-struct TcpSlice<'a> {
-    header_len: usize,
-    data: &'a [u8],
-}
-
-const TCP_HEADER_MIN_LEN: usize = 20;
-
-impl<'a> TcpSlice<'a> {
-    pub fn from_slice(slice: &'a [u8]) -> std::result::Result<TcpSlice<'a>, HeaderError> {
-        // TCP header length must be larger than 4B * 5 = 20B
-        if slice.len() < TCP_HEADER_MIN_LEN {
-            return Err(HeaderError::InvalidLengthErorr(slice.len()));
-        }
-
-        // get `data_offset` from the packet
-        // and check the length
-        // then we set the header_len to it
-        // (because it takes into account `option` section)
-        //
-        // offset means the total number of words (32-bit) in header
-        // so, it must be multiplied by 4 to representing as byte nubmer.
-        let offset = usize::from((slice[12] & 0xf0) >> 2);
-        if offset < TCP_HEADER_MIN_LEN {
-            return Err(HeaderError::InvalidLengthErorr(slice.len()));
-        }
-
-        eprintln!("data offset {}", offset);
-
-        Ok(Self {
-            header_len: offset,
-            data: slice,
-        })
-    }
-}
+use tcprs::TcpSlice;
 
 fn main() -> io::Result<()> {
     let nic = tun_tap::Iface::new("tun", tun_tap::Mode::Tun)?;
@@ -77,7 +33,15 @@ fn main() -> io::Result<()> {
 
                 match TcpSlice::from_slice(&buf[4 + p.slice().len()..]) {
                     Ok(t) => {
-                        eprintln!("{:?}", t);
+                        eprintln!(
+                            "header_len={}, src_port={}, dst_port={}, sec={}, ack={}, data_offset={}",
+                            t.header_len(),
+                            t.source_port(),
+                            t.destination_port(),
+                            t.sequence_number(),
+                            t.acknowledgment_number(),
+                            t.data_offset()
+                        );
                     }
                     Err(e) => {
                         eprintln!("weird pakcet: {}", e);

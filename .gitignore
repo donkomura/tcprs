@@ -25,5 +25,5 @@ target
 
 /target
 
-# Vim local conf
-.vimrc.local
+# ignre vim files 
+*.sw?

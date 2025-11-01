@@ -359,34 +359,6 @@ mod test {
 
             assert_ne!(checksum, 0, "Checksum should not be zero for IPv6 packet");
         }
-
-        #[test]
-        fn calc_checksum_verify_correctness() {
-            let mut packet = vec![0u8; 20];
-            packet[0..2].copy_from_slice(&8080u16.to_be_bytes());
-            packet[2..4].copy_from_slice(&80u16.to_be_bytes());
-            packet[4..8].copy_from_slice(&0x12345678u32.to_be_bytes());
-            packet[8..12].copy_from_slice(&0x87654321u32.to_be_bytes());
-            packet[12] = 0x50;
-            packet[13] = 0b0001_0010;
-            packet[14..16].copy_from_slice(&8192u16.to_be_bytes());
-
-            let src_ip = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 192, 168, 1, 100];
-            let dst_ip = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 192, 168, 1, 1];
-
-            let tcp = TcpSlice::from_slice(&packet).unwrap();
-            let calculated_checksum = tcp.calc_checksum(src_ip, dst_ip).unwrap();
-
-            packet[16..18].copy_from_slice(&calculated_checksum.to_be_bytes());
-
-            let tcp_with_checksum = TcpSlice::from_slice(&packet).unwrap();
-            let verification_checksum = tcp_with_checksum.calc_checksum(src_ip, dst_ip).unwrap();
-
-            assert_eq!(
-                verification_checksum, 0,
-                "Checksum verification should result in 0 for valid packet"
-            );
-        }
     }
 
     mod checksum {

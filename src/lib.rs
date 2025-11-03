@@ -29,7 +29,7 @@ impl<'a> TcpSlice<'a> {
         // (because it takes into account `option` section)
         //
         // offset means the total number of words (32-bit) in header
-        // so, it must be multiplied by 4 to representing as byte nubmer.
+        // so, it must be multiplied by 4 to representing as byte number.
         let offset = usize::from((slice[12] & 0xf0) >> 2);
         if offset < TCP_HEADER_MIN_LEN {
             return Err(HeaderError::InvalidLengthErorr(slice.len()));

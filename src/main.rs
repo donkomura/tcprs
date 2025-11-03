@@ -44,7 +44,7 @@ fn main() -> io::Result<()> {
                         );
                     }
                     Err(e) => {
-                        eprintln!("weird pakcet: {}", e);
+                        eprintln!("weird packet: {}", e);
                     }
                 }
             }

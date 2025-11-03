@@ -97,7 +97,7 @@ impl<'a> TcpSlice<'a> {
         checksum
             .add_16bytes(src_ip) // source ip
             .add_16bytes(dst_ip) // destination ip
-            .add_2bytes([0u8, 6u8]) // brank and protocol
+            .add_2bytes([0u8, 6u8]) // blank and protocol
             .add_4bytes((self.data.len() as u32).to_be_bytes()); // TCP length
 
         // add TCP header without checksum

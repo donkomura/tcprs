@@ -3,7 +3,7 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum HeaderError {
     #[error("invalid header length `{0}`")]
-    InvalidLengthErorr(usize),
+    InvalidLengthError(usize),
     #[error("unknown")]
     Unknown,
 }
@@ -20,7 +20,7 @@ impl<'a> TcpSlice<'a> {
     pub fn from_slice(slice: &'a [u8]) -> std::result::Result<TcpSlice<'a>, HeaderError> {
         // TCP header length must be larger than 4B * 5 = 20B
         if slice.len() < TCP_HEADER_MIN_LEN {
-            return Err(HeaderError::InvalidLengthErorr(slice.len()));
+            return Err(HeaderError::InvalidLengthError(slice.len()));
         }
 
         // get `data_offset` from the packet
@@ -32,7 +32,7 @@ impl<'a> TcpSlice<'a> {
         // so, it must be multiplied by 4 to representing as byte number.
         let offset = usize::from((slice[12] & 0xf0) >> 2);
         if offset < TCP_HEADER_MIN_LEN {
-            return Err(HeaderError::InvalidLengthErorr(slice.len()));
+            return Err(HeaderError::InvalidLengthError(slice.len()));
         }
 
         Ok(Self {

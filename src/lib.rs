@@ -43,6 +43,9 @@ impl<'a> TcpSlice<'a> {
     pub fn header_len(&self) -> usize {
         self.header_len
     }
+    pub fn header_len_u16(&self) -> u16 {
+        self.header_len as u16
+    }
     pub fn source_port(&self) -> u16 {
         u16::from_be_bytes([self.slice[0], self.slice[1]])
     }

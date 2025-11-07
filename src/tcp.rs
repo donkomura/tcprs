@@ -70,6 +70,8 @@ pub struct Connection {
     state: State,
     send: SendSequenceSpace,
     recv: ReceiveSequenceSpace,
+    iph: etherparse::Ipv4Header,
+    tcph: etherparse::TcpHeader,
 }
 
 impl Connection {
@@ -97,12 +99,13 @@ impl Connection {
         }
 
         let iss = 0;
-        let c = Connection {
+        let wnd = 10;
+        let mut c = Connection {
             state: State::SynRcvd,
             send: SendSequenceSpace {
                 una: iss,
                 nxt: iss + 1,
-                wnd: 10,
+                wnd: wnd,
                 up: false,
                 wl1: 0,
                 wl2: 0,
@@ -114,43 +117,51 @@ impl Connection {
                 up: false,
                 wnd: tcph.window(),
             },
+            tcph: etherparse::TcpHeader::new(tcph.destination_port(), tcph.source_port(), iss, wnd),
+            iph: etherparse::Ipv4Header::new(
+                0, // payload length will be set in write()
+                64,
+                etherparse::IpNumber::TCP,
+                [
+                    iph.destination()[0],
+                    iph.destination()[1],
+                    iph.destination()[2],
+                    iph.destination()[3],
+                ],
+                [
+                    iph.source()[0],
+                    iph.source()[1],
+                    iph.source()[2],
+                    iph.source()[3],
+                ],
+            )
+            .unwrap(),
         };
-        let mut buf = [0u8; 1054];
-        let mut cursor = Cursor::new(&mut buf[..]);
+        c.tcph.syn = true;
+        c.tcph.ack = true;
+        c.write(nic, c.send.nxt)?;
 
-        // establish the connection
-        let mut syn_hdr = etherparse::TcpHeader::new(
-            tcph.destination_port(),
-            tcph.source_port(),
-            c.send.iss,
-            c.send.wnd,
-        );
-        syn_hdr.acknowledgment_number = tcph.sequence_number();
-        syn_hdr.syn = true;
-        syn_hdr.ack = true;
-        let ip = etherparse::Ipv4Header::new(
-            syn_hdr.header_len_u16(),
-            64,
-            etherparse::IpNumber::TCP,
-            [
-                iph.destination()[0],
-                iph.destination()[1],
-                iph.destination()[2],
-                iph.destination()[3],
-            ],
-            [
-                iph.source()[0],
-                iph.source()[1],
-                iph.source()[2],
-                iph.source()[3],
-            ],
-        )
-        .unwrap();
-        ip.write(&mut cursor)?;
-        syn_hdr.write(&mut cursor)?;
-        let used = cursor.position() as usize;
-        let _ = nic.send(&buf[..used]);
         Ok(Some(c))
+    }
+    pub fn write(&mut self, nic: &mut tun_tap::Iface, seq: u32) -> io::Result<usize> {
+        let mut buf = [0u8; 1054];
+        
+        self.tcph.sequence_number = seq;
+        self.tcph.acknowledgment_number = self.recv.nxt;
+        
+        // Set the payload length in IP header
+        self.iph
+            .set_payload_len(self.tcph.header_len_u16() as usize).unwrap();
+        
+        // Calculate TCP checksum
+        self.tcph.checksum = self.tcph.calc_checksum_ipv4(&self.iph, &[]).unwrap();
+        
+        let mut cursor = Cursor::new(&mut buf[..]);
+        self.iph.write(&mut cursor)?;
+        self.tcph.write(&mut cursor)?;
+        let used = cursor.position() as usize;
+        let n = nic.send(&buf[..used])?;
+        Ok(n)
     }
     pub fn on_packet<'a>(
         &mut self,

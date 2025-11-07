@@ -11,7 +11,7 @@ pub enum HeaderError {
 #[derive(Debug)]
 pub struct TcpSlice<'a> {
     header_len: usize,
-    data: &'a [u8],
+    slice: &'a [u8],
 }
 
 const TCP_HEADER_MIN_LEN: usize = 20;
@@ -37,56 +37,56 @@ impl<'a> TcpSlice<'a> {
 
         Ok(Self {
             header_len: offset,
-            data: slice,
+            slice: slice,
         })
     }
     pub fn header_len(&self) -> usize {
         self.header_len
     }
     pub fn source_port(&self) -> u16 {
-        u16::from_be_bytes([self.data[0], self.data[1]])
+        u16::from_be_bytes([self.slice[0], self.slice[1]])
     }
     pub fn destination_port(&self) -> u16 {
-        u16::from_be_bytes([self.data[2], self.data[3]])
+        u16::from_be_bytes([self.slice[2], self.slice[3]])
     }
     pub fn sequence_number(&self) -> u32 {
-        u32::from_be_bytes([self.data[4], self.data[5], self.data[6], self.data[7]])
+        u32::from_be_bytes([self.slice[4], self.slice[5], self.slice[6], self.slice[7]])
     }
     pub fn acknowledgment_number(&self) -> u32 {
-        u32::from_be_bytes([self.data[8], self.data[9], self.data[10], self.data[11]])
+        u32::from_be_bytes([self.slice[8], self.slice[9], self.slice[10], self.slice[11]])
     }
     pub fn data_offset(&self) -> u8 {
-        (self.data[12] & 0xf0) >> 4
+        (self.slice[12] & 0xf0) >> 4
     }
     pub fn urg(&self) -> bool {
-        0 != (self.data[13] & 0b0010_0000)
+        0 != (self.slice[13] & 0b0010_0000)
     }
     pub fn ack(&self) -> bool {
-        0 != (self.data[13] & 0b0001_0000)
+        0 != (self.slice[13] & 0b0001_0000)
     }
     pub fn psh(&self) -> bool {
-        0 != (self.data[13] & 0b0000_1000)
+        0 != (self.slice[13] & 0b0000_1000)
     }
     pub fn rst(&self) -> bool {
-        0 != (self.data[13] & 0b0000_0100)
+        0 != (self.slice[13] & 0b0000_0100)
     }
     pub fn syn(&self) -> bool {
-        0 != (self.data[13] & 0b0000_0010)
+        0 != (self.slice[13] & 0b0000_0010)
     }
     pub fn fin(&self) -> bool {
-        0 != (self.data[13] & 0b0000_0001)
+        0 != (self.slice[13] & 0b0000_0001)
     }
     pub fn window(&self) -> u16 {
-        u16::from_be_bytes([self.data[14], self.data[15]])
+        u16::from_be_bytes([self.slice[14], self.slice[15]])
     }
     pub fn checksum(&self) -> u16 {
-        u16::from_be_bytes([self.data[16], self.data[17]])
+        u16::from_be_bytes([self.slice[16], self.slice[17]])
     }
     pub fn urgent_pointer(&self) -> u16 {
-        u16::from_be_bytes([self.data[18], self.data[19]])
+        u16::from_be_bytes([self.slice[18], self.slice[19]])
     }
     pub fn options(&self) -> &[u8] {
-        &self.data[TCP_HEADER_MIN_LEN..self.header_len]
+        &self.slice[TCP_HEADER_MIN_LEN..self.header_len]
     }
     pub fn calc_checksum(
         &self,
@@ -98,16 +98,18 @@ impl<'a> TcpSlice<'a> {
             .add_16bytes(src_ip) // source ip
             .add_16bytes(dst_ip) // destination ip
             .add_2bytes([0u8, 6u8]) // blank and protocol
-            .add_4bytes((self.data.len() as u32).to_be_bytes()); // TCP length
+            .add_4bytes((self.slice.len() as u32).to_be_bytes()); // TCP length
 
         // add TCP header without checksum
         Ok(checksum
-            .add_slice(&self.data[..16])
-            .add_slice(&self.data[18..])
+            .add_slice(&self.slice[..16])
+            .add_slice(&self.slice[18..])
             .ones_complement())
     }
 
-    // TODO: should be test on this
+    pub fn slice(&self) -> &[u8] {
+        &self.slice
+    }
 }
 
 #[derive(Error, Debug)]
@@ -314,9 +316,9 @@ mod test {
             packet[16..18].copy_from_slice(&0x0000u16.to_be_bytes());
             packet[18..20].copy_from_slice(&100u16.to_be_bytes());
 
-            let data = b"Hello, TCP!";
+            let slice = b"Hello, TCP!";
             let mut full_packet = packet.clone();
-            full_packet.extend_from_slice(data);
+            full_packet.extend_from_slice(slice);
 
             let tcp = TcpSlice::from_slice(&full_packet).unwrap();
 
@@ -327,7 +329,7 @@ mod test {
 
             assert_ne!(
                 checksum, 0,
-                "Checksum should not be zero for packet with data"
+                "Checksum should not be zero for packet with slice"
             );
         }
 
@@ -411,12 +413,12 @@ mod test {
 
         #[test]
         fn add_16bytes() {
-            let data = [
+            let slice = [
                 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
                 0x27, 0x28,
             ];
 
-            let result = CheckSum16::default().add_16bytes(data).ones_complement();
+            let result = CheckSum16::default().add_16bytes(slice).ones_complement();
 
             let expected = !(u16::from_ne_bytes([0x11, 0x12])
                 + u16::from_ne_bytes([0x13, 0x14])

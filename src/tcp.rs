@@ -104,7 +104,7 @@ impl Connection {
             state: State::SynRcvd,
             send: SendSequenceSpace {
                 una: iss,
-                nxt: iss + 1,
+                nxt: iss.wrapping_add(1),
                 wnd: wnd,
                 up: false,
                 wl1: 0,
@@ -113,7 +113,7 @@ impl Connection {
             },
             recv: ReceiveSequenceSpace {
                 irs: tcph.sequence_number(),
-                nxt: tcph.sequence_number() + 1,
+                nxt: tcph.sequence_number().wrapping_add(1),
                 up: false,
                 wnd: tcph.window(),
             },
@@ -145,17 +145,18 @@ impl Connection {
     }
     pub fn write(&mut self, nic: &mut tun_tap::Iface, seq: u32) -> io::Result<usize> {
         let mut buf = [0u8; 1054];
-        
+
         self.tcph.sequence_number = seq;
         self.tcph.acknowledgment_number = self.recv.nxt;
-        
+
         // Set the payload length in IP header
         self.iph
-            .set_payload_len(self.tcph.header_len_u16() as usize).unwrap();
-        
+            .set_payload_len(self.tcph.header_len_u16() as usize)
+            .unwrap();
+
         // Calculate TCP checksum
         self.tcph.checksum = self.tcph.calc_checksum_ipv4(&self.iph, &[]).unwrap();
-        
+
         let mut cursor = Cursor::new(&mut buf[..]);
         self.iph.write(&mut cursor)?;
         self.tcph.write(&mut cursor)?;

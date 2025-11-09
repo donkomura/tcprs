@@ -79,7 +79,7 @@ impl<'a> TcpSlice<'a> {
     pub fn fin(&self) -> bool {
         0 != (self.slice[13] & 0b0000_0001)
     }
-    pub fn window(&self) -> u16 {
+    pub fn window_size(&self) -> u16 {
         u16::from_be_bytes([self.slice[14], self.slice[15]])
     }
     pub fn checksum(&self) -> u16 {

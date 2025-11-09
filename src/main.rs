@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io;
-use tcprs::TcpSlice;
+// use tcprs::TcpSlice;
+use etherparse::TcpSlice;
 
 mod tcp;
 
@@ -37,7 +38,8 @@ fn main() -> io::Result<()> {
                     ip_hdr.payload_len().unwrap()
                 );
 
-                match TcpSlice::from_slice(&buf[ip_hdr.slice().len()..eth_nbytes]) {
+                match etherparse::TcpHeaderSlice::from_slice(&buf[ip_hdr.slice().len()..eth_nbytes])
+                {
                     Ok(tcp_hdr) => {
                         use std::collections::hash_map::Entry;
                         let idx_payload = ip_hdr.slice().len() + tcp_hdr.slice().len();
@@ -53,7 +55,7 @@ fn main() -> io::Result<()> {
                                     &buf[idx_payload..eth_nbytes],
                                 )?;
                             }
-                            Entry::Vacant(mut e) => {
+                            Entry::Vacant(e) => {
                                 if let Some(c) = tcp::Connection::accept(
                                     &mut nic,
                                     ip_hdr,
@@ -70,7 +72,7 @@ fn main() -> io::Result<()> {
                     }
                 }
             }
-            Err(e) => {
+            Err(_) => {
                 // eprintln!("unknown packet: {}", e);
             }
         }

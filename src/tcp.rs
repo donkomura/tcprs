@@ -1,10 +1,25 @@
 use etherparse::TcpHeaderSlice;
+use std::collections::VecDeque;
 use std::io;
 use std::io::Cursor;
 use std::io::Write;
 use std::net::Ipv4Addr;
 
-#[derive(Eq, PartialEq, Hash, Debug)]
+const CAP_READ: u8 = 0b00000001;
+const CAP_WRITE: u8 = 0b00000010;
+
+#[derive(Default)]
+pub(crate) struct Available {
+    flag: u8,
+}
+
+impl Available {
+    pub fn is_readable(&self) -> bool {
+        (self.flag & CAP_READ) > 0
+    }
+}
+
+#[derive(Eq, PartialEq, Hash, Debug, Clone, Copy)]
 pub struct Quad {
     pub src: (Ipv4Addr, u16),
     pub dst: (Ipv4Addr, u16),
@@ -91,9 +106,30 @@ pub struct Connection {
     recv: ReceiveSequenceSpace,
     iph: etherparse::Ipv4Header,
     tcph: etherparse::TcpHeader,
+
+    pub(crate) incoming: VecDeque<u8>,
+    pub(crate) outgoing: VecDeque<u8>,
+
+    pub(crate) closed: bool,
 }
 
 impl Connection {
+    pub(crate) fn is_recv_closed(&self) -> bool {
+        if let State::TimeWait = self.state {
+            // TODO: other state
+            true
+        } else {
+            false
+        }
+    }
+    pub(crate) fn availability(&self) -> Available {
+        let mut x = Available::default();
+        if self.is_recv_closed() || !self.incoming.is_empty() {
+            x.flag |= CAP_READ;
+        }
+        // TODO: cap for write
+        x
+    }
     pub fn accept<'a>(
         nic: &mut tun_tap::Iface,
         iph: etherparse::Ipv4HeaderSlice<'a>,
@@ -154,6 +190,9 @@ impl Connection {
                 ],
             )
             .unwrap(),
+            incoming: Default::default(),
+            outgoing: Default::default(),
+            closed: false,
         };
         c.tcph.syn = true;
         c.tcph.ack = true;
@@ -230,7 +269,7 @@ impl Connection {
         iph: etherparse::Ipv4HeaderSlice<'a>,
         tcph: etherparse::TcpHeaderSlice<'a>,
         data: &'a [u8],
-    ) -> io::Result<()> {
+    ) -> io::Result<Available> {
         // check sequence number
         // RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
         //   or
@@ -245,7 +284,11 @@ impl Connection {
         }
         let toe = self.recv.nxt.wrapping_add(self.recv.wnd.into());
         let valid_range = if slen == 0 {
-            self.recv.wnd != 0 && is_between_wrapped(self.recv.nxt.wrapping_sub(1), seq, toe)
+            if self.recv.wnd == 0 {
+                seq != self.recv.nxt
+            } else {
+                is_between_wrapped(self.recv.nxt.wrapping_sub(1), seq, toe)
+            }
         } else {
             self.recv.wnd != 0
                 && (is_between_wrapped(self.recv.nxt.wrapping_sub(1), seq, toe)
@@ -261,14 +304,14 @@ impl Connection {
                 "invalid range: seq={}, slen={}, recv.nxt={}, recv.wnd={}, toe={}",
                 seq, slen, self.recv.nxt, self.recv.wnd, toe
             );
-            return Ok(());
+            return Ok(self.availability());
         }
 
         if !tcph.ack() {
             if tcph.syn() {
                 self.recv.nxt = seq.wrapping_add(slen);
             }
-            return Ok(());
+            return Ok(self.availability());
         }
 
         // check the ACK field
@@ -282,7 +325,7 @@ impl Connection {
                 self.recv.nxt = tcph.acknowledgment_number();
                 self.send_rst(nic);
             }
-            return Ok(());
+            return Ok(self.availability());
         }
 
         if let State::SynRcvd = self.state {
@@ -299,7 +342,7 @@ impl Connection {
 
         if let State::Estab = self.state {
             if !is_between_wrapped(self.send.una, ack, self.send.nxt.wrapping_add(1)) {
-                return Ok(());
+                return Ok(self.availability());
             }
             self.send.una = ack;
             // TODO
@@ -343,10 +386,42 @@ impl Connection {
             }
         }
 
+        Ok(self.availability())
+    }
+    pub(crate) fn close(&mut self) -> io::Result<()> {
+        self.closed = true;
+        match self.state {
+            State::SynRcvd | State::Estab => {
+                self.state = State::FinWait1;
+            }
+            State::FinWait1 | State::FinWait2 => {}
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "already closing",
+                ))
+            }
+        };
         Ok(())
     }
 }
 
+fn wrapping_lt(lhs: u32, rhs: u32) -> bool {
+    // From RFC1323 S2.3:
+    //   TCP determines if a data segment is "old" or "new" by testing
+    //   whether its sequence number is within 2**31 bytes of the left edge
+    //   of the window, and if it is not, discarding the data as "old".  To
+    //   insure that new data is never mistakenly considered old and vice-
+    //   versa, the left edge of the sender's window has to be at most
+    //   2**31 away from the right edge of the receiver's window.
+    lhs.wrapping_sub(rhs) > (1 << 31)
+}
+
+fn is_between_wrapped(start: u32, target: u32, end: u32) -> bool {
+    wrapping_lt(start, target) && wrapping_lt(target, end)
+}
+
+/*
 // check START < TARGET <= END
 fn is_between_wrapped(start: u32, target: u32, end: u32) -> bool {
     if start == end {
@@ -356,26 +431,4 @@ fn is_between_wrapped(start: u32, target: u32, end: u32) -> bool {
     }
     end >= target && start >= end
 }
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn is_between_normal_range() {
-        assert!(is_between_wrapped(10, 20, 30));
-        assert!(is_between_wrapped(10, 20, 20));
-    }
-    #[test]
-    fn is_between_wrapped_1() {
-        assert!(is_between_wrapped(10, 20, 1));
-        assert!(is_between_wrapped(10, 20, 9));
-        assert!(!is_between_wrapped(10, 20, 15));
-    }
-    #[test]
-    fn is_between_wrapped_2() {
-        assert!(is_between_wrapped(100, 5, 10));
-        assert!(is_between_wrapped(100, 1, 1));
-        assert!(!is_between_wrapped(100, 99, 100));
-    }
-}
+*/

@@ -7,3 +7,9 @@ edition = "2024"
 tun-tap = "0.1.4"
 etherparse = "0.18"
 thiserror = "2"
+
+[lib]
+name = "tcprs"
+
+[[bin]]
+name = "tcprs"

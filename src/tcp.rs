@@ -25,6 +25,7 @@ pub struct Quad {
     pub dst: (Ipv4Addr, u16),
 }
 
+#[derive(PartialEq)]
 enum State {
     // Listen,
     SynRcvd,
@@ -50,7 +51,7 @@ impl State {
 }
 
 /// Send Sequence Space (RFC793 Fig4 in S3.2)
-/// ```
+/// ```text
 ///            1         2          3          4
 ///       ----------|----------|----------|----------
 ///              SND.UNA    SND.NXT    SND.UNA
@@ -79,7 +80,7 @@ struct SendSequenceSpace {
 }
 
 /// Receive Sequence Space (RFC793 Fig5 in S3.2)
-/// ```
+/// ```text
 ///                1          2          3
 ///            ----------|----------|----------
 ///                   RCV.NXT    RCV.NXT
@@ -108,7 +109,7 @@ pub struct Connection {
     tcph: etherparse::TcpHeader,
 
     pub(crate) incoming: VecDeque<u8>,
-    pub(crate) outgoing: VecDeque<u8>,
+    pub(crate) unacked: VecDeque<u8>,
 
     pub(crate) closed: bool,
 }
@@ -160,7 +161,7 @@ impl Connection {
                 iss,
                 una: iss,
                 nxt: iss,
-                wnd: wnd,
+                wnd,
                 up: false,
                 wl1: 0,
                 wl2: 0,
@@ -191,12 +192,12 @@ impl Connection {
             )
             .unwrap(),
             incoming: Default::default(),
-            outgoing: Default::default(),
+            unacked: Default::default(),
             closed: false,
         };
         c.tcph.syn = true;
         c.tcph.ack = true;
-        c.write(nic, c.send.nxt, &[])?;
+        c.send_ack(nic, &[]);
 
         Ok(Some(c))
     }
@@ -245,28 +246,30 @@ impl Connection {
         let n = nic.send(&buf[..used])?;
         Ok(n)
     }
+    pub fn send_ack(&mut self, nic: &mut tun_tap::Iface, buf: &[u8]) -> io::Result<usize> {
+        self.write(nic, self.send.nxt, buf)
+    }
     pub fn send_rst(&mut self, nic: &mut tun_tap::Iface) -> io::Result<()> {
-        // TODO: handle syncronized reset
-        //     3.  If the connection is in a synchronized state (ESTABLISHED,
-        //         FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT),
-        //         any unacceptable segment (out of window sequence number or
-        //         unacceptible acknowledgment number) must elicit only an empty
-        //         acknowledgment segment containing the current send-sequence number
-        //         and an acknowledgment indicating the next sequence number expected
-        //         to be received, and the connection remains in the same state.
+        // 3.  If the connection is in a synchronized state (ESTABLISHED,
+        //     FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT),
+        //     any unacceptable segment (out of window sequence number or
+        //     unacceptible acknowledgment number) must elicit only an empty
+        //     acknowledgment segment containing the current send-sequence number
+        //     and an acknowledgment indicating the next sequence number expected
+        //     to be received, and the connection remains in the same state.
         self.tcph.rst = true;
         // TODO: the ACK field is set to the sum of the sequence number and segment
         // length of the incoming segment
         self.tcph.acknowledgment_number = 0;
-        self.iph.set_payload_len(self.tcph.header_len());
-        self.write(nic, 0, &[]);
+        self.iph.set_payload_len(self.tcph.header_len()).unwrap();
+        self.write(nic, 0, &[])?;
         Ok(())
     }
 
     pub fn on_packet<'a>(
         &mut self,
         nic: &mut tun_tap::Iface,
-        iph: etherparse::Ipv4HeaderSlice<'a>,
+        _iph: etherparse::Ipv4HeaderSlice<'a>,
         tcph: etherparse::TcpHeaderSlice<'a>,
         data: &'a [u8],
     ) -> io::Result<Available> {
@@ -309,7 +312,9 @@ impl Connection {
 
         if !tcph.ack() {
             if tcph.syn() {
-                self.recv.nxt = seq.wrapping_add(slen);
+                // got SYN in handshake, then we consume seq
+                assert!(data.is_empty());
+                self.recv.nxt = seq.wrapping_add(1);
             }
             return Ok(self.availability());
         }
@@ -318,16 +323,6 @@ impl Connection {
         // check if the packet is acceptable ack
         // SND.UNA < SEG.ACK =< SND.NXT
         let ack = tcph.acknowledgment_number();
-        if !is_between_wrapped(self.send.una, ack, self.send.nxt) {
-            // TODO: is this correct?
-            if !self.state.is_synchronized() {
-                // Reset Generation (TCP793 S3.4)
-                self.recv.nxt = tcph.acknowledgment_number();
-                self.send_rst(nic);
-            }
-            return Ok(self.availability());
-        }
-
         if let State::SynRcvd = self.state {
             if is_between_wrapped(
                 self.send.una.wrapping_sub(1),
@@ -336,22 +331,19 @@ impl Connection {
             ) {
                 self.state = State::Estab;
             } else {
-                // TODO: <SEQ=SEG.ACK><CTL=RST>
+                self.send_rst(nic);
+                return Ok(self.availability());
             }
         }
 
-        if let State::Estab = self.state {
-            if !is_between_wrapped(self.send.una, ack, self.send.nxt.wrapping_add(1)) {
-                return Ok(self.availability());
+        if let State::Estab | State::FinWait1 | State::FinWait2 = self.state {
+            if is_between_wrapped(self.send.una, ack, self.send.nxt.wrapping_add(1)) {
+                self.send.una = ack;
             }
-            self.send.una = ack;
-            // TODO
-            assert!(data.is_empty());
 
-            // TEST:terminate the connection
-            self.tcph.fin = true;
-            self.write(nic, self.send.nxt, &[])?;
-            self.state = State::FinWait1;
+            // TODO: the acked data in queue has to be deleted
+            // TODO: notify
+            // TODO: update window
         }
 
         if let State::FinWait1 = self.state {
@@ -361,7 +353,24 @@ impl Connection {
             }
         }
 
+        if let State::Estab | State::FinWait1 | State::FinWait2 = self.state {
+            // TODO: only read that we haven't read
+            let mut unread_at = self.recv.nxt.wrapping_sub(seq) as usize;
+            if unread_at > data.len() {
+                // reset pointer
+                unread_at = 0;
+            }
+            self.incoming.extend(&data[unread_at..]);
+
+            self.recv.nxt = seq.wrapping_add(data.len() as u32);
+
+            self.send_ack(nic, &[])?;
+        }
+
         // check the queue
+        if !data.is_empty() {
+            // TODO: set incoming
+        }
 
         if tcph.fin() {
             match self.state {
@@ -374,7 +383,7 @@ impl Connection {
                         self.state = State::TimeWait;
                     } else {
                         self.state = State::Closing;
-                        self.write(nic, self.send.nxt, &[])?;
+                        self.send_ack(nic, &[])?;
                     }
                 }
                 State::FinWait2 => {
@@ -390,18 +399,18 @@ impl Connection {
     }
     pub(crate) fn close(&mut self) -> io::Result<()> {
         self.closed = true;
+        Ok(())
+    }
+
+    pub(crate) fn send_fin(&mut self, nic: &mut tun_tap::Iface) -> io::Result<()> {
+        self.tcph.fin = true;
+        self.write(nic, self.send.nxt, &[])?;
         match self.state {
-            State::SynRcvd | State::Estab => {
+            State::Estab => {
                 self.state = State::FinWait1;
             }
-            State::FinWait1 | State::FinWait2 => {}
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotConnected,
-                    "already closing",
-                ))
-            }
-        };
+            _ => {}
+        }
         Ok(())
     }
 }

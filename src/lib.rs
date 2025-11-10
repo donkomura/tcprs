@@ -228,7 +228,7 @@ impl Write for TcpStream {
             io::Error::new(io::ErrorKind::ConnectionAborted, "stream was terminated")
         })?;
 
-        if c.outgoing.len() >= SENDQUE_SIZE {
+        if c.unacked.len() >= SENDQUE_SIZE {
             // TODO: block
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -236,8 +236,8 @@ impl Write for TcpStream {
             ));
         }
 
-        let nbytes = std::cmp::min(SENDQUE_SIZE - c.outgoing.len(), buf.len());
-        c.outgoing.extend(buf[..nbytes].iter());
+        let nbytes = std::cmp::min(SENDQUE_SIZE - c.unacked.len(), buf.len());
+        c.unacked.extend(buf[..nbytes].iter());
         Ok(nbytes)
     }
     fn flush(&mut self) -> Result<()> {
@@ -246,7 +246,7 @@ impl Write for TcpStream {
             io::Error::new(io::ErrorKind::ConnectionAborted, "stream was terminated")
         })?;
 
-        if c.outgoing.is_empty() {
+        if c.unacked.is_empty() {
             Ok(())
         } else {
             // TODO: block
